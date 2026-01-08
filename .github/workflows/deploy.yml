@@ -1,1 +1,180 @@
 
+name: Deploy to Amazon ECS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: 503888849992.dkr.ecr.ap-south-1.amazonaws.com
+  ECR_BACKEND_REPOSITORY: myapp-backend
+  ECR_FRONTEND_REPOSITORY: myappfrontend
+  ECS_CLUSTER: devopstrends-cluster
+  ECS_SERVICE: devopstrends-backend-service-latest
+  ECS_TASK_DEFINITION: devopstrends-backend
+  CONTAINER_NAME_BACKEND: backend-container
+  CONTAINER_NAME_FRONTEND: frontend-container
+
+jobs:
+  deploy:
+    name: Deploy Backend and Frontend to ECS
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set version tag
+      id: version
+      run: |
+        # Extract current version from existing image and increment
+        CURRENT_VERSION=$(aws ecr describe-images \
+          --repository-name ${{ env.ECR_BACKEND_REPOSITORY }} \
+          --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+          --output text || echo "v1.4")
+        
+        # Parse version number (e.g., v1.4 -> 1.4)
+        VERSION_NUMBER=$(echo $CURRENT_VERSION | sed 's/v//')
+        
+        # Increment minor version
+        NEW_VERSION=$(echo $VERSION_NUMBER | awk -F. '{printf "v%d.%d", $1, $2+1}')
+        
+        echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "📦 Current version: $CURRENT_VERSION"
+        echo "🚀 New version: $NEW_VERSION"
+
+    - name: Build, tag, and push backend image to Amazon ECR
+      id: build-backend-image
+      env:
+        IMAGE_TAG: ${{ steps.version.outputs.new_version }}
+      run: |
+        echo "🔨 Building backend image..."
+        docker build -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:$IMAGE_TAG \
+          -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:latest \
+          -f backend/Dockerfile \
+          ./backend
+        
+        echo "⬆️  Pushing backend image..."
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:$IMAGE_TAG
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:latest
+        
+        echo "image=${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "✅ Backend image pushed: $IMAGE_TAG"
+
+    - name: Build, tag, and push frontend image to Amazon ECR
+      id: build-frontend-image
+      env:
+        IMAGE_TAG: ${{ steps.version.outputs.new_version }}
+      run: |
+        echo "🔨 Building frontend image..."
+        docker build -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:$IMAGE_TAG \
+          -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:latest \
+          -f frontend/Dockerfile \
+          ./frontend
+        
+        echo "⬆️  Pushing frontend image..."
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:$IMAGE_TAG
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:latest
+        
+        echo "image=${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "✅ Frontend image pushed: $IMAGE_TAG"
+
+    - name: Download current task definition
+      run: |
+        echo "📥 Downloading current task definition..."
+        aws ecs describe-task-definition \
+          --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+          --query taskDefinition > task-definition.json
+        
+        echo "📄 Current task definition downloaded"
+
+    - name: Update backend container in task definition
+      id: task-def-backend
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ env.CONTAINER_NAME_BACKEND }}
+        image: ${{ steps.build-backend-image.outputs.image }}
+
+    - name: Update frontend container in task definition
+      id: task-def-frontend
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def-backend.outputs.task-definition }}
+        container-name: ${{ env.CONTAINER_NAME_FRONTEND }}
+        image: ${{ steps.build-frontend-image.outputs.image }}
+
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.task-def-frontend.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+
+    - name: Verify deployment
+      run: |
+        echo "🔍 Verifying deployment..."
+        SERVICE_STATUS=$(aws ecs describe-services \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }} \
+          --query 'services[0].status' \
+          --output text)
+        
+        RUNNING_COUNT=$(aws ecs describe-services \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }} \
+          --query 'services[0].runningCount' \
+          --output text)
+        
+        echo "Service Status: $SERVICE_STATUS"
+        echo "Running Tasks: $RUNNING_COUNT"
+
+    - name: Deployment summary
+      run: |
+        echo "========================================"
+        echo "✅ DEPLOYMENT COMPLETED SUCCESSFULLY!"
+        echo "========================================"
+        echo ""
+        echo "📦 Version Details:"
+        echo "  Previous: ${{ steps.version.outputs.current_version }}"
+        echo "  Current:  ${{ steps.version.outputs.new_version }}"
+        echo ""
+        echo "🐳 Docker Images:"
+        echo "  Backend:  ${{ steps.build-backend-image.outputs.image }}"
+        echo "  Frontend: ${{ steps.build-frontend-image.outputs.image }}"
+        echo ""
+        echo "☁️  AWS Resources:"
+        echo "  Cluster: ${{ env.ECS_CLUSTER }}"
+        echo "  Service: ${{ env.ECS_SERVICE }}"
+        echo "  Region:  ${{ env.AWS_REGION }}"
+        echo ""
+        echo "🔗 View in AWS Console:"
+        echo "  https://ap-south-1.console.aws.amazon.com/ecs/v2/clusters/${{ env.ECS_CLUSTER }}/services/${{ env.ECS_SERVICE }}?region=ap-south-1"
+        echo "========================================"
+
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "❌ DEPLOYMENT FAILED!"
+        echo "Please check the logs above for error details."
+        echo "You may need to:"
+        echo "  1. Check AWS credentials and permissions"
+        echo "  2. Verify ECS cluster and service names"
+        echo "  3. Check Docker build processes"
+        echo "  4. Review task definition configuration"
