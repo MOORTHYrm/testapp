@@ -96,7 +96,7 @@ curl -X DELETE http://localhost:3000/api/users/1
 | PostgreSQL | 5432 | EC2 Security Group | Database |
 
 ## 🗄️ Database Configuration
-- **Cluster**: devopstrends-aurora-cluster.cluster-cpow4k4ckx7n.ap-south-1.rds.amazonaws.com
+- **Cluster**: Clusterendpoint
 - **Database**: testdb
 - **Port**: 5432
 - **Table**: users (auto-created)
