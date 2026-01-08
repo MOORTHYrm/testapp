@@ -15,8 +15,8 @@ env:
   ECS_CLUSTER: devopstrends-cluster
   ECS_SERVICE: devopstrends-backend-service-latest
   ECS_TASK_DEFINITION: devopstrends-backend
-  CONTAINER_NAME_BACKEND: backend-container
-  CONTAINER_NAME_FRONTEND: frontend-container
+  CONTAINER_NAME_BACKEND: backend
+  CONTAINER_NAME_FRONTEND: frontend1
 
 jobs:
   deploy:
