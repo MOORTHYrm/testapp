@@ -1,3 +1,4 @@
+
 name: Deploy to Amazon ECS
 
 on:
@@ -25,53 +26,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Send Slack notification - Deployment Started
-      uses: slackapi/slack-github-action@v1.26.0
-      with:
-        payload: |
-          {
-            "text": "🚀 Deployment Started",
-            "blocks": [
-              {
-                "type": "header",
-                "text": {
-                  "type": "plain_text",
-                  "text": "🚀 ECS Deployment Started"
-                }
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Repository:*\n${{ github.repository }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Branch:*\n${{ github.ref_name }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Triggered by:*\n${{ github.actor }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Cluster:*\ndevopstrends-cluster"
-                  }
-                ]
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "*Commit:* <${{ github.event.head_commit.url }}|${{ github.event.head_commit.message }}>"
-                }
-              }
-            ]
-          }
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -174,7 +128,6 @@ jobs:
         wait-for-service-stability: true
 
     - name: Verify deployment
-      id: verify
       run: |
         echo "🔍 Verifying deployment..."
         SERVICE_STATUS=$(aws ecs describe-services \
@@ -189,8 +142,6 @@ jobs:
           --query 'services[0].runningCount' \
           --output text)
         
-        echo "service_status=$SERVICE_STATUS" >> $GITHUB_OUTPUT
-        echo "running_count=$RUNNING_COUNT" >> $GITHUB_OUTPUT
         echo "Service Status: $SERVICE_STATUS"
         echo "Running Tasks: $RUNNING_COUNT"
 
@@ -216,159 +167,6 @@ jobs:
         echo "🔗 View in AWS Console:"
         echo "  https://ap-south-1.console.aws.amazon.com/ecs/v2/clusters/${{ env.ECS_CLUSTER }}/services/${{ env.ECS_SERVICE }}?region=ap-south-1"
         echo "========================================"
-
-    - name: Send Slack notification - Deployment Success
-      if: success()
-      uses: slackapi/slack-github-action@v1.26.0
-      with:
-        payload: |
-          {
-            "text": "✅ Deployment Successful",
-            "blocks": [
-              {
-                "type": "header",
-                "text": {
-                  "type": "plain_text",
-                  "text": "✅ ECS Deployment Successful"
-                }
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Repository:*\n${{ github.repository }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Branch:*\n${{ github.ref_name }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Version:*\n${{ steps.version.outputs.new_version }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Deployed by:*\n${{ github.actor }}"
-                  }
-                ]
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "*Docker Images:*\n• Backend: `${{ steps.build-backend-image.outputs.image }}`\n• Frontend: `${{ steps.build-frontend-image.outputs.image }}`"
-                }
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "*Service Status:*\n• Status: `${{ steps.verify.outputs.service_status }}`\n• Running Tasks: `${{ steps.verify.outputs.running_count }}`"
-                }
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "*ECS Cluster:* devopstrends-cluster\n*Region:* ap-south-1"
-                }
-              },
-              {
-                "type": "actions",
-                "elements": [
-                  {
-                    "type": "button",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "View in AWS Console"
-                    },
-                    "url": "https://ap-south-1.console.aws.amazon.com/ecs/v2/clusters/${{ env.ECS_CLUSTER }}/services/${{ env.ECS_SERVICE }}?region=ap-south-1",
-                    "style": "primary"
-                  },
-                  {
-                    "type": "button",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "View GitHub Action"
-                    },
-                    "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                  }
-                ]
-              }
-            ]
-          }
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-    - name: Send Slack notification - Deployment Failed
-      if: failure()
-      uses: slackapi/slack-github-action@v1.26.0
-      with:
-        payload: |
-          {
-            "text": "❌ Deployment Failed",
-            "blocks": [
-              {
-                "type": "header",
-                "text": {
-                  "type": "plain_text",
-                  "text": "❌ ECS Deployment Failed"
-                }
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Repository:*\n${{ github.repository }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Branch:*\n${{ github.ref_name }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Failed by:*\n${{ github.actor }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Cluster:*\ndevopstrends-cluster"
-                  }
-                ]
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "*Commit:* <${{ github.event.head_commit.url }}|${{ github.event.head_commit.message }}>"
-                }
-              },
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "⚠️ *Action Required:* Please check the workflow logs for error details.\n\n*Common Issues:*\n• AWS credentials or permissions\n• Docker build errors\n• ECS service configuration\n• Task definition issues"
-                }
-              },
-              {
-                "type": "actions",
-                "elements": [
-                  {
-                    "type": "button",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "View Logs"
-                    },
-                    "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-                    "style": "danger"
-                  }
-                ]
-              }
-            ]
-          }
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     - name: Notify on failure
       if: failure()
