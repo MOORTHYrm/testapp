@@ -13,7 +13,7 @@ env:
   ECR_BACKEND_REPOSITORY: myapp-backend
   ECR_FRONTEND_REPOSITORY: myappfrontend
   ECS_CLUSTER: devopstrends-cluster
-  ECS_SERVICE: devopstrends-backend-service-latest
+  ECS_SERVICE: devopstrends-backend-service-lhohj1y5
   ECS_TASK_DEFINITION: devopstrends-backend
   CONTAINER_NAME_BACKEND: backend
   CONTAINER_NAME_FRONTEND: frontend1
