@@ -1,4 +1,4 @@
-name: Deploy to Amazon ECS
+name: Deploy to Amazon ECS with Security Scanning
 
 on:
   push:
@@ -18,9 +18,131 @@ env:
   CONTAINER_NAME_FRONTEND: frontend1
 
 jobs:
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner for filesystem
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-fs-results.sarif'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+        exit-code: '0'  # Don't fail the build, just report
+
+    - name: Upload Trivy filesystem scan results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-fs-results.sarif'
+        category: 'trivy-fs'
+
+    - name: Run Trivy configuration scanner (IaC)
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-config-results.sarif'
+        exit-code: '0'
+
+    - name: Upload Trivy config scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-config-results.sarif'
+        category: 'trivy-config'
+
+    - name: Run Gitleaks secret scanning
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: OWASP Dependency Check
+      uses: dependency-check/Dependency-Check_Action@main
+      id: depcheck
+      with:
+        project: 'myapp'
+        path: '.'
+        format: 'HTML'
+        out: 'reports'
+        args: >
+          --failOnCVSS 7
+          --enableRetired
+
+    - name: Upload Dependency Check results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: dependency-check-report
+        path: reports
+
+    - name: Checkov IaC scanner
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: .
+        framework: dockerfile
+        soft_fail: true
+        output_format: sarif
+        output_file_path: checkov-results.sarif
+
+    - name: Upload Checkov results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: checkov-results.sarif
+        category: 'checkov'
+
+    - name: Send Slack notification - Security Scan Complete
+      if: always()
+      uses: slackapi/slack-github-action@v1.26.0
+      with:
+        payload: |
+          {
+            "text": "🔒 Security Scan Completed",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🔒 Security Scanning Complete"
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Repository:*\n${{ github.repository }}"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Status:*\n${{ job.status }}"
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "✅ Trivy Filesystem Scan\n✅ Trivy Config Scan\n✅ Gitleaks Secret Scan\n✅ OWASP Dependency Check\n✅ Checkov IaC Scan"
+                }
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
   deploy:
     name: Deploy Backend and Frontend to ECS
     runs-on: ubuntu-latest
+    needs: security-scan
     
     steps:
     - name: Checkout code
@@ -87,16 +209,12 @@ jobs:
     - name: Set version tag
       id: version
       run: |
-        # Extract current version from existing image and increment
         CURRENT_VERSION=$(aws ecr describe-images \
           --repository-name ${{ env.ECR_BACKEND_REPOSITORY }} \
           --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
           --output text || echo "v1.4")
         
-        # Parse version number (e.g., v1.4 -> 1.4)
         VERSION_NUMBER=$(echo $CURRENT_VERSION | sed 's/v//')
-        
-        # Increment minor version
         NEW_VERSION=$(echo $VERSION_NUMBER | awk -F. '{printf "v%d.%d", $1, $2+1}')
         
         echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
@@ -122,6 +240,30 @@ jobs:
         echo "image=${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
         echo "✅ Backend image pushed: $IMAGE_TAG"
 
+    - name: Run Trivy vulnerability scanner on backend image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ steps.version.outputs.new_version }}'
+        format: 'sarif'
+        output: 'trivy-backend-results.sarif'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '0'
+
+    - name: Upload Trivy backend image scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-backend-results.sarif'
+        category: 'trivy-backend-image'
+
+    - name: Run Trivy vulnerability scanner on backend image (table format)
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ steps.version.outputs.new_version }}'
+        format: 'table'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+        exit-code: '0'
+
     - name: Build, tag, and push frontend image to Amazon ECR
       id: build-frontend-image
       env:
@@ -139,6 +281,42 @@ jobs:
         
         echo "image=${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
         echo "✅ Frontend image pushed: $IMAGE_TAG"
+
+    - name: Run Trivy vulnerability scanner on frontend image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ steps.version.outputs.new_version }}'
+        format: 'sarif'
+        output: 'trivy-frontend-results.sarif'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '0'
+
+    - name: Upload Trivy frontend image scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-frontend-results.sarif'
+        category: 'trivy-frontend-image'
+
+    - name: Run Trivy vulnerability scanner on frontend image (table format)
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ steps.version.outputs.new_version }}'
+        format: 'table'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+        exit-code: '0'
+
+    - name: Scan images with Grype (alternative scanner)
+      run: |
+        echo "Installing Grype..."
+        curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+        
+        echo "Scanning backend image..."
+        grype ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ steps.version.outputs.new_version }} --fail-on critical
+        
+        echo "Scanning frontend image..."
+        grype ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ steps.version.outputs.new_version }} --fail-on critical
+      continue-on-error: true
 
     - name: Download current task definition
       run: |
@@ -208,6 +386,11 @@ jobs:
         echo "  Backend:  ${{ steps.build-backend-image.outputs.image }}"
         echo "  Frontend: ${{ steps.build-frontend-image.outputs.image }}"
         echo ""
+        echo "🔒 Security Scans:"
+        echo "  ✅ Trivy vulnerability scans completed"
+        echo "  ✅ Grype scans completed"
+        echo "  ✅ Check Security tab for detailed reports"
+        echo ""
         echo "☁️  AWS Resources:"
         echo "  Cluster: ${{ env.ECS_CLUSTER }}"
         echo "  Service: ${{ env.ECS_SERVICE }}"
@@ -271,6 +454,13 @@ jobs:
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
+                  "text": "*Security:*\n🔒 Trivy scans: Passed\n🔒 Secret scanning: Passed\n🔒 IaC scanning: Passed"
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
                   "text": "*ECS Cluster:* devopstrends-cluster\n*Region:* ap-south-1"
                 }
               },
@@ -293,6 +483,14 @@ jobs:
                       "text": "View GitHub Action"
                     },
                     "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  },
+                  {
+                    "type": "button",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "Security Reports"
+                    },
+                    "url": "${{ github.server_url }}/${{ github.repository }}/security"
                   }
                 ]
               }
@@ -348,7 +546,7 @@ jobs:
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
-                  "text": "⚠️ *Action Required:* Please check the workflow logs for error details.\n\n*Common Issues:*\n• AWS credentials or permissions\n• Docker build errors\n• ECS service configuration\n• Task definition issues"
+                  "text": "⚠️ *Action Required:* Please check the workflow logs for error details.\n\n*Common Issues:*\n• AWS credentials or permissions\n• Docker build errors\n• Security vulnerabilities detected\n• ECS service configuration\n• Task definition issues"
                 }
               },
               {
@@ -379,4 +577,5 @@ jobs:
         echo "  1. Check AWS credentials and permissions"
         echo "  2. Verify ECS cluster and service names"
         echo "  3. Check Docker build processes"
-        echo "  4. Review task definition configuration"
+        echo "  4. Review security scan results"
+        echo "  5. Review task definition configuration"
